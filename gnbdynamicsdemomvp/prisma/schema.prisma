@@ -1,0 +1,461 @@
+// GNB Dynamics — Unified Business Platform
+// Prisma schema modeling Section 6 of the MVP build spec.
+// SQLite for the demo (no external Supabase/Postgres project required to run it).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Foundation
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SALES
+  PRODUCTION
+  PRINTING_OPERATOR
+  QC
+  DELIVERY
+  INSTALLATION
+  ACCOUNTING
+  HR_ADMIN
+  PURCHASING
+  WAREHOUSE
+  MANAGEMENT
+}
+
+model User {
+  id         String   @id @default(cuid())
+  name       String
+  email      String   @unique
+  role       Role
+  department String
+  position   String
+  status     String   @default("active") // active | inactive
+  createdAt  DateTime @default(now())
+
+  leadsOwned          Lead[]                @relation("LeadOwner")
+  jobOrdersCreated    JobOrder[]            @relation("JobOrderCreator")
+  stageEvents         StageEvent[]
+  materialRequests    MaterialRequest[]
+  fieldUpdates        FieldUpdate[]
+  inventoryTxns       InventoryTransaction[]
+  toolAssignments     ToolEquipment[]
+  purchaseRequests    RequestToPurchase[]
+  costSheetsApproved  CostSheet[]           @relation("CostSheetApprover")
+  dvPrepared          DisbursementVoucher[] @relation("DVPreparer")
+  dvApproved          DisbursementVoucher[] @relation("DVApprover")
+  quotationsApproved  Quotation[]           @relation("QuotationApprover")
+  opexRecorded        OperatingExpense[]
+  employee            Employee?
+  manpowerApproved    ManpowerRequest[]     @relation("ManpowerApprover")
+  payrollReviewed     PayrollEntry[]        @relation("PayrollReviewer")
+}
+
+model Client {
+  id                  String   @id @default(cuid())
+  companyName         String
+  contactPerson       String
+  contactInfo         String
+  accreditationDocs   String   @default("[]") // JSON string array of doc names/urls
+  accreditationStatus String   @default("pending") // pending | accredited | rejected
+  createdAt           DateTime @default(now())
+
+  leads       Lead[]
+  rfqs        Rfq[]
+  quotations  Quotation[]
+  jobOrders   JobOrder[]
+  invoices    Invoice[]
+  arRecords   ARRecord[]
+}
+
+// ---------------------------------------------------------------------------
+// Sales
+// ---------------------------------------------------------------------------
+
+model Lead {
+  id        String   @id @default(cuid())
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id])
+  companyName String
+  contactPerson String
+  contactInfo String
+  source    String   // referral | online | direct
+  status    String   @default("new") // new | qualifying | accredited | converted | lost
+  notes     String   @default("")
+  ownerId   String
+  owner     User     @relation("LeadOwner", fields: [ownerId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Rfq {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id])
+  receivedDate   DateTime @default(now())
+  specsText      String
+  attachedFiles  String   @default("[]")
+  dimensions     String   @default("")
+  quantity       Int      @default(1)
+  ocularRequired Boolean  @default(false)
+  status         String   @default("open") // open | quoted | closed
+  createdAt      DateTime @default(now())
+
+  quotations Quotation[]
+}
+
+model Quotation {
+  id               String   @id @default(cuid())
+  rfqId            String?
+  rfq              Rfq?     @relation(fields: [rfqId], references: [id])
+  clientId         String
+  client           Client   @relation(fields: [clientId], references: [id])
+  lineItems        String   // JSON: [{description, qty, unitPrice}]
+  subtotal         Float
+  discount         Float    @default(0)
+  total            Float
+  requiresApproval Boolean  @default(false)
+  approvedById     String?
+  approvedBy       User?    @relation("QuotationApprover", fields: [approvedById], references: [id])
+  approvalStatus   String   @default("n/a") // n/a | pending | approved | rejected
+  status           String   @default("draft") // draft | sent | accepted | rejected
+  sentDate         DateTime?
+  createdAt        DateTime @default(now())
+
+  jobOrders JobOrder[]
+}
+
+// ---------------------------------------------------------------------------
+// Operations / Job Orders
+// ---------------------------------------------------------------------------
+
+model JobOrder {
+  id                  String   @id @default(cuid())
+  quotationId         String?
+  quotation           Quotation? @relation(fields: [quotationId], references: [id])
+  clientId            String
+  client              Client   @relation(fields: [clientId], references: [id])
+  jobNumber           String   @unique
+  projectDetails      String
+  noticeToProceedDate DateTime @default(now())
+  createdById         String
+  createdBy           User     @relation("JobOrderCreator", fields: [createdById], references: [id])
+  currentStage        String   @default("created")
+  // created | printing | production | qc | delivery | installation | back_job | closed
+  createdAt           DateTime @default(now())
+
+  stageEvents      StageEvent[]
+  materialRequests MaterialRequest[]
+  fieldUpdates     FieldUpdate[]
+  costSheet        CostSheet?
+  invoices         Invoice[]
+  arRecords        ARRecord[]
+  apRecords        APRecord[]
+  subcontractorWorkOrders SubcontractorWorkOrder[]
+}
+
+model StageEvent {
+  id         String   @id @default(cuid())
+  jobOrderId String
+  jobOrder   JobOrder @relation(fields: [jobOrderId], references: [id])
+  stage      String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  notes      String   @default("")
+  attachments String  @default("[]")
+  timestamp  DateTime @default(now())
+}
+
+model MaterialRequest {
+  id          String   @id @default(cuid())
+  jobOrderId  String
+  jobOrder    JobOrder @relation(fields: [jobOrderId], references: [id])
+  requestedById String
+  requestedBy User     @relation(fields: [requestedById], references: [id])
+  items       String   // JSON [{item, qty, availableStock, status}]
+  status      String   @default("pending") // pending | partially_released | released
+  createdAt   DateTime @default(now())
+}
+
+model FieldUpdate {
+  id          String   @id @default(cuid())
+  jobOrderId  String
+  jobOrder    JobOrder @relation(fields: [jobOrderId], references: [id])
+  stage       String   // dispatch | delivery | installation
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  statusLabel String   // dispatched | en_route | arrived | in_progress | completed | issue
+  photoUrl    String   @default("")
+  notes       String   @default("")
+  timestamp   DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Inventory & Tool/Equipment
+// ---------------------------------------------------------------------------
+
+model InventoryItem {
+  id           String   @id @default(cuid())
+  sku          String   @unique
+  name         String
+  category     String
+  unit         String
+  qtyOnHand    Float    @default(0)
+  reorderPoint Float    @default(0)
+  location     String   @default("")
+
+  transactions InventoryTransaction[]
+}
+
+model InventoryTransaction {
+  id               String   @id @default(cuid())
+  itemId           String
+  item             InventoryItem @relation(fields: [itemId], references: [id])
+  type             String   // in | out
+  qty              Float
+  relatedRequestId String?
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  timestamp        DateTime @default(now())
+}
+
+model ToolEquipment {
+  id                 String   @id @default(cuid())
+  name               String
+  tagId              String   @unique
+  status             String   @default("available") // available | released | maintenance
+  assignedToId       String?
+  assignedTo         User?    @relation(fields: [assignedToId], references: [id])
+  conditionNotes     String   @default("")
+  lastInspectionDate DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Purchasing
+// ---------------------------------------------------------------------------
+
+model RequestToPurchase {
+  id            String   @id @default(cuid())
+  sourceType    String   // inventory | tool_equipment | job_order
+  sourceId      String   @default("")
+  requestedById String
+  requestedBy   User     @relation(fields: [requestedById], references: [id])
+  items         String   // JSON [{item, qty, notes}]
+  status        String   @default("pending") // pending | sourcing | po_issued | closed
+  createdAt     DateTime @default(now())
+
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id                    String   @id @default(cuid())
+  supplierName          String
+  requestToPurchaseId   String?
+  requestToPurchase     RequestToPurchase? @relation(fields: [requestToPurchaseId], references: [id])
+  items                 String   // JSON [{item, qty, unitPrice}]
+  status                String   @default("draft") // draft | issued | receiving | received | cancelled
+  totalAmount           Float
+  issuedDate            DateTime?
+  createdAt             DateTime @default(now())
+}
+
+model SubcontractorWorkOrder {
+  id                    String   @id @default(cuid())
+  jobOrderId            String
+  jobOrder              JobOrder @relation(fields: [jobOrderId], references: [id])
+  scopeOfWork           String
+  quotationsReceived    String   // JSON [{supplier, amount}] (min 3 expected)
+  selectedSubcontractor String   @default("")
+  cost                  Float    @default(0)
+  timeline              String   @default("")
+  status                String   @default("sourcing") // sourcing | awarded | in_progress | completed
+  paymentRequestStatus  String   @default("none") // none | requested | approved | paid
+  createdAt             DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Accounting
+// ---------------------------------------------------------------------------
+
+model CostSheet {
+  id                  String   @id @default(cuid())
+  jobOrderId          String   @unique
+  jobOrder            JobOrder @relation(fields: [jobOrderId], references: [id])
+  estimatedMaterials  Float    @default(0)
+  estimatedLabor      Float    @default(0)
+  estimatedSubcon     Float    @default(0)
+  budgetApprovedById  String?
+  budgetApprovedBy    User?    @relation("CostSheetApprover", fields: [budgetApprovedById], references: [id])
+  approvalStatus      String   @default("pending") // pending | approved | rejected
+  createdAt           DateTime @default(now())
+}
+
+model DisbursementVoucher {
+  id              String   @id @default(cuid())
+  supplierOrPayee String
+  amount          Float
+  purpose         String
+  relatedPoId     String?
+  supportingDocs  String   @default("[]")
+  status          String   @default("pending") // pending | approved | disbursed
+  preparedById    String
+  preparedBy      User     @relation("DVPreparer", fields: [preparedById], references: [id])
+  approvedById    String?
+  approvedBy      User?    @relation("DVApprover", fields: [approvedById], references: [id])
+  createdAt       DateTime @default(now())
+}
+
+model Invoice {
+  id                 String   @id @default(cuid())
+  jobOrderId         String
+  jobOrder           JobOrder @relation(fields: [jobOrderId], references: [id])
+  clientId           String
+  client             Client   @relation(fields: [clientId], references: [id])
+  drReference        String   @default("")
+  lineItems          String   // JSON [{description, qty, unitPrice}]
+  total              Float
+  status             String   @default("draft") // draft | sent | paid | overdue
+  submissionPlatform String   @default("internal")
+  createdAt          DateTime @default(now())
+
+  arRecords ARRecord[]
+}
+
+model ARRecord {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id])
+  jobOrderId     String?
+  jobOrder       JobOrder? @relation(fields: [jobOrderId], references: [id])
+  invoiceId      String?
+  invoice        Invoice? @relation(fields: [invoiceId], references: [id])
+  amount         Float
+  dueDate        DateTime
+  status         String   @default("open") // open | partial | paid
+  paymentHistory String   @default("[]")
+  createdAt      DateTime @default(now())
+}
+
+model APRecord {
+  id             String   @id @default(cuid())
+  supplierName   String
+  jobOrderId     String?
+  jobOrder       JobOrder? @relation(fields: [jobOrderId], references: [id])
+  amount         Float
+  dueDate        DateTime
+  status         String   @default("open") // open | partial | paid
+  paymentHistory String   @default("[]")
+  createdAt      DateTime @default(now())
+}
+
+model OperatingExpense {
+  id               String   @id @default(cuid())
+  type             String   // fixed | variable
+  category         String
+  amount           Float
+  date             DateTime @default(now())
+  liquidationDocs  String   @default("[]")
+  recordedById     String
+  recordedBy       User     @relation(fields: [recordedById], references: [id])
+}
+
+model MonthEndChecklistItem {
+  id        String   @id @default(cuid())
+  period    String   // e.g. "2026-07"
+  task      String
+  done      Boolean  @default(false)
+  doneAt    DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// HR / Admin / Payroll
+// ---------------------------------------------------------------------------
+
+model Employee {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id])
+  position         String
+  department       String
+  dateHired        DateTime @default(now())
+  employmentStatus String   @default("active") // active | on_leave | separated
+  assignedSops     String   @default("[]")
+
+  payrollEntries PayrollEntry[]
+}
+
+model ManpowerRequest {
+  id                  String   @id @default(cuid())
+  requestingDepartment String
+  position            String
+  approvedById        String?
+  approvedBy          User?    @relation("ManpowerApprover", fields: [approvedById], references: [id])
+  status              String   @default("pending") // pending | approved | rejected | filled
+  createdAt           DateTime @default(now())
+
+  jobPostings JobPosting[]
+}
+
+model JobPosting {
+  id                String   @id @default(cuid())
+  manpowerRequestId String
+  manpowerRequest   ManpowerRequest @relation(fields: [manpowerRequestId], references: [id])
+  description       String
+  bannerUrl         String   @default("")
+  channels          String   @default("[]")
+  status            String   @default("draft") // draft | posted | closed
+  createdAt         DateTime @default(now())
+
+  applicants Applicant[]
+}
+
+model Applicant {
+  id            String   @id @default(cuid())
+  jobPostingId  String
+  jobPosting    JobPosting @relation(fields: [jobPostingId], references: [id])
+  name          String
+  contact       String
+  resumeUrl     String   @default("")
+  status        String   @default("applied")
+  // applied | shortlisted | interview | selected | background_check | offer | onboarded | rejected
+  createdAt     DateTime @default(now())
+}
+
+model PayrollEntry {
+  id           String   @id @default(cuid())
+  employeeId   String
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  period       String   // e.g. "2026-07-01 to 2026-07-15"
+  basePay      Float
+  deductions   String   @default("[]") // JSON [{label, amount}]
+  netPay       Float
+  status       String   @default("draft") // draft | reviewed | disbursed
+  reviewedById String?
+  reviewedBy   User?    @relation("PayrollReviewer", fields: [reviewedById], references: [id])
+  createdAt    DateTime @default(now())
+}
+
+model MemoOrSop {
+  id                String   @id @default(cuid())
+  title             String
+  type              String   // memo | work_instruction | process | procedure
+  department        String
+  assignedPositions String   @default("[]")
+  fileUrl           String   @default("")
+  effectiveDate     DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+model Setting {
+  key   String @id
+  value String
+}
